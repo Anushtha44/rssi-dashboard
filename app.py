@@ -5,7 +5,7 @@ import altair as alt
 
 # ---------------- PAGE CONFIG ----------------
 st.set_page_config(
-    page_title="RSSI Dashboard",
+    page_title="RSSI vs Distance Dashboard",
     page_icon="📡",
     layout="wide"
 )
@@ -13,10 +13,9 @@ st.set_page_config(
 # ---------------- THINGSPEAK CONFIG ----------------
 CHANNEL_ID = "3232555"
 READ_API_KEY = "O5ISQ8GA969Z01WG"
-FIELD_NO = 1
 
 THINGSPEAK_URL = (
-    f"https://api.thingspeak.com/channels/{CHANNEL_ID}/fields/{FIELD_NO}.json"
+    f"https://api.thingspeak.com/channels/{CHANNEL_ID}/feeds.json"
     f"?api_key={READ_API_KEY}&results=20"
 )
 
@@ -39,7 +38,7 @@ if not st.session_state.logged_in:
         st.success("Login Successful")
         st.rerun()
 
-    st.caption("UI Only • Demo Login")
+    st.caption("Demo Login • UI Only")
 
 # ---------------- DASHBOARD ----------------
 else:
@@ -50,90 +49,120 @@ else:
 
     st.sidebar.success("Connected to ThingSpeak")
 
-    st.title("📡 RSSI Monitoring Dashboard (Live ThingSpeak Data)")
+    st.title("📡 RSSI & Distance Monitoring Dashboard")
 
-    # ---------------- FETCH THINGSPEAK DATA ----------------
+    # ---------------- FETCH DATA ----------------
     try:
         response = requests.get(THINGSPEAK_URL, timeout=5)
         data = response.json()
 
-        feeds = data["feeds"]
         rssi_values = []
+        distance_values = []
         timestamps = []
 
-        for feed in feeds:
-            if feed.get(f"field{FIELD_NO}") is not None:
-                rssi_values.append(int(float(feed[f"field{FIELD_NO}"])))
+        for feed in data["feeds"]:
+            if feed.get("field1") and feed.get("field2"):
+                rssi_values.append(int(float(feed["field1"])))
+                distance_values.append(float(feed["field2"]))
                 timestamps.append(feed["created_at"])
 
-        rssi_data = pd.DataFrame({
+        df = pd.DataFrame({
             "Time": timestamps,
-            "RSSI (dBm)": rssi_values
+            "RSSI (dBm)": rssi_values,
+            "Distance (cm)": distance_values
         })
 
-        # ---------------- RSSI STATUS FUNCTION ----------------
-        def rssi_status(rssi):
-            if rssi >= -55:
-                return "🟢 Strong"
-            elif -70 <= rssi < -50:
-                return "🟡 Average"
-            else:
-                return "🔴 Weak"
-
-        # ---------------- ADD STATUS COLUMN ----------------
-        rssi_data["Status"] = rssi_data["RSSI (dBm)"].apply(rssi_status)
-
-    except Exception as e:
-        st.error("❌ Failed to fetch ThingSpeak data")
+    except:
+        st.error("❌ Failed to fetch data from ThingSpeak")
         st.stop()
 
+    # ---------------- RSSI STATUS ----------------
+    def rssi_status(rssi):
+        if rssi >= -55:
+            return "🟢 Strong"
+        elif -70 <= rssi < -55:
+            return "🟡 Average"
+        else:
+            return "🔴 Weak"
+
+    # ---------------- LINK QUALITY ----------------
+    def link_quality(distance, rssi):
+        if rssi >= -60 and distance <= 100:
+            return "Excellent"
+        elif -75 <= rssi < -60 and distance <= 200:
+            return "Moderate"
+        else:
+            return "Poor"
+
+    df["Status"] = df["RSSI (dBm)"].apply(rssi_status)
+    df["Link Quality"] = df.apply(
+        lambda row: link_quality(row["Distance (cm)"], row["RSSI (dBm)"]),
+        axis=1
+    )
+
     # ---------------- METRICS ----------------
-    latest_rssi = rssi_data["RSSI (dBm)"].iloc[-1]
-    latest_status = rssi_status(latest_rssi)
+    latest_rssi = df["RSSI (dBm)"].iloc[-1]
+    latest_dist = df["Distance (cm)"].iloc[-1]
 
     col1, col2, col3 = st.columns(3)
-    col1.metric("📶 Latest RSSI", f"{latest_rssi} dBm")
-    col2.metric("📡 Signal Quality", latest_status)
-    col3.metric("☁️ Source", "ThingSpeak")
+    col1.metric("📶 RSSI", f"{latest_rssi} dBm")
+    col2.metric("📏 Distance", f"{latest_dist} cm")
+    col3.metric("📡 Status", rssi_status(latest_rssi))
 
     st.markdown("---")
 
-    # ---------------- LINE GRAPH ----------------
+    # ---------------- RSSI LINE GRAPH ----------------
     with st.container(border=True):
-        st.subheader("📈 RSSI Signal Trend (Live)")
+        st.subheader("📈 RSSI Trend Over Time")
 
         line_chart = (
-            alt.Chart(rssi_data)
+            alt.Chart(df)
             .mark_line(point=True)
             .encode(
-                x=alt.X("Time:T", title="Time"),
-                y=alt.Y("RSSI (dBm):Q", title="RSSI (dBm)"),
+                x="Time:T",
+                y="RSSI (dBm):Q",
                 tooltip=["Time:T", "RSSI (dBm):Q"]
             )
             .properties(height=350)
-
         )
 
         st.altair_chart(line_chart, use_container_width=True)
 
-    # ---------------- BAR GRAPH ----------------
+    # ---------------- DISTANCE vs RSSI SCATTER ----------------
     with st.container(border=True):
-        st.subheader("📊 RSSI Rise & Fall (Live Bar Graph)")
+        st.subheader("📐 Distance vs RSSI Comparison")
 
-        bar_chart = (
-            alt.Chart(rssi_data)
-            .mark_bar(size=20)
+        scatter = (
+            alt.Chart(df)
+            .mark_circle(size=120)
             .encode(
-                x=alt.X("Time:T", title="Time", axis=alt.Axis(labelAngle=-45)),
+                x=alt.X("Distance (cm):Q", title="Distance (cm)"),
                 y=alt.Y("RSSI (dBm):Q", title="RSSI (dBm)"),
                 color=alt.Color(
-                    "Status:N",
+                    "Link Quality:N",
                     scale=alt.Scale(
-                        domain=["🟢 Strong", "🟡 Average", "🔴 Weak"],
+                        domain=["Excellent", "Moderate", "Poor"],
                         range=["green", "orange", "red"]
-                    ),
-                    legend=alt.Legend(title="Signal Strength")
+                    )
                 ),
+                tooltip=["Distance (cm)", "RSSI (dBm)", "Link Quality"]
+            )
+            .properties(height=350)
+        )
+
+        st.altair_chart(scatter, use_container_width=True)
+
+    # ---------------- BAR GRAPH ----------------
+    with st.container(border=True):
+        st.subheader("📊 RSSI Strength Levels")
+
+        bar_chart = (
+            alt.Chart(df)
+            .mark_bar(size=25)
+            .encode(
+                x=alt.X("Time:T", axis=alt.Axis(labelAngle=-45)),
+                y="RSSI (dBm):Q",
+                color="Status:N",
                 tooltip=["Time:T", "RSSI (dBm):Q", "Status:N"]
             )
             .properties(height=350)
@@ -142,11 +171,18 @@ else:
         st.altair_chart(bar_chart, use_container_width=True)
 
     # ---------------- TABLE ----------------
-    st.subheader("📋 RSSI Logs (Live)")
-    st.dataframe(rssi_data.tail(10))
+    st.subheader("📋 Live RSSI & Distance Logs")
+    st.dataframe(df.tail(10), use_container_width=True)
+
+    # ---------------- INSIGHT ----------------
+    st.info(
+        f"📊 Observation: RSSI decreases as distance increases "
+        f"(Avg Distance: {df['Distance (cm)'].mean():.1f} cm, "
+        f"Avg RSSI: {df['RSSI (dBm)'].mean():.1f} dBm)."
+    )
 
     # ---------------- REFRESH ----------------
     if st.button("🔄 Refresh Data"):
         st.rerun()
 
-    st.caption("Live RSSI Dashboard • ThingSpeak • ESP32 Compatible")
+    st.caption("ESP32 • Ultrasonic Sensor • ThingSpeak • Streamlit")
